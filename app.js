@@ -1,12 +1,22 @@
 const appRoot = document.querySelector("#app");
+const assetBaseUrl = new URL(".", document.currentScript.src);
 
 // Única fuente de preguntas. Cada pregunta debe tener un id numérico único,
 // question y options: [{ text, isCorrect }], con una sola respuesta correcta.
-const subjectFile = "odoo.json";
+// image es opcional y contiene una ruta relativa al JSON en data/.
+const subjects = {
+  bank: { label: "Banco de preguntas", description: "Banco completo de preguntas de Odoo 19." },
+  revision: {
+    label: "Pendientes de curar",
+    description: "Preguntas marcadas como dudosas en el informe de revisión.",
+    warning: "Preguntas aún por curar. No se garantiza que las respuestas sean correctas.",
+  },
+};
 const countOptions = [30, 60, 90, 120, "custom"];
 
 const initialState = {
   view: "config",
+  selectedSubject: "bank",
   selectedCount: null,
   customCount: "",
   session: null,
@@ -32,6 +42,9 @@ function render() {
 }
 
 function renderConfig() {
+  const subjectButtons = Object.entries(subjects)
+    .map(([id, subject]) => `<button class="${appState.selectedSubject === id ? "primary" : ""}" data-action="select-subject" data-subject="${id}" aria-pressed="${appState.selectedSubject === id}">${subject.label}</button>`)
+    .join("");
   const countButtons = countOptions
     .map((countValue) => {
       const selectedClass = appState.selectedCount === countValue ? "primary" : "";
@@ -45,6 +58,12 @@ function renderConfig() {
   appRoot.innerHTML = `
     <section class="card">
       <h1>Certificación funcional de Odoo</h1>
+      <fieldset class="subject-picker">
+        <legend>Tema</legend>
+        <div class="actions">${subjectButtons}</div>
+      </fieldset>
+      <p>${subjects[appState.selectedSubject].description}</p>
+      ${renderSubjectNotice(appState.selectedSubject)}
       <p>Practica en bloques de 30, 60 o 90 preguntas, prepara un examen de 120 o elige una cantidad personalizada.</p>
       <div class="actions">${countButtons}</div>
       ${
@@ -64,6 +83,12 @@ function renderConfig() {
       </div>
     </section>
   `;
+
+  appRoot.querySelectorAll('[data-action="select-subject"]').forEach((button) => {
+    button.addEventListener("click", () => {
+      setState({ ...appState, selectedSubject: button.dataset.subject });
+    });
+  });
 
   appRoot.querySelectorAll('[data-action="select-count"]').forEach((button) => {
     button.addEventListener("click", () => {
@@ -94,18 +119,21 @@ async function startQuiz() {
     return;
   }
 
-  const questions = await loadQuestions();
-  if (questions === null) {
-    window.alert("No se pudo cargar el banco de preguntas de Odoo. Comprueba que data/odoo.json sea un JSON válido con identificadores únicos y una respuesta correcta por pregunta. Abre la aplicación desde un servidor HTTP.");
+  const subjectId = appState.selectedSubject;
+  let questions;
+  try {
+    questions = await loadQuestions(subjectId);
+  } catch (error) {
+    window.alert(`No se pudo cargar el tema seleccionado. ${error.message}`);
     return;
   }
   if (!questions.length) {
-    window.alert("El banco de Odoo está vacío. Añade las preguntas a data/odoo.json para comenzar.");
+    window.alert("El tema seleccionado no contiene preguntas.");
     return;
   }
 
   if (questionCount > questions.length) {
-    window.alert(`Este bloque necesita ${questionCount} preguntas y el banco contiene ${questions.length}. Elige un bloque menor o una cantidad personalizada.`);
+    window.alert(`Este bloque necesita ${questionCount} preguntas y el tema contiene ${questions.length}. Elige un bloque menor o una cantidad personalizada.`);
     return;
   }
 
@@ -118,7 +146,10 @@ async function startQuiz() {
   setState({
     ...appState,
     view: "quiz",
+    selectedSubject: subjectId,
+    reviewIndex: 0,
     session: {
+      subjectId,
       index: 0,
       score: 0,
       questions: preparedQuestions,
@@ -127,24 +158,56 @@ async function startQuiz() {
   });
 }
 
-async function loadQuestions() {
+async function loadQuestions(subjectId = appState.selectedSubject) {
+  if (assetBaseUrl.protocol === "file:") {
+    throw new Error("El navegador bloquea los JSON al abrir index.html como archivo local (file://). Abre la web publicada en GitHub Pages o usa un servidor local: python3 -m http.server 8000 y entra en http://localhost:8000.");
+  }
+  if (!Object.hasOwn(subjects, subjectId)) throw new Error("El tema seleccionado no existe.");
+  const bankUrl = new URL("data/odoo.json", assetBaseUrl);
+  const payload = await loadJson(bankUrl);
+  if (!Array.isArray(payload) || !payload.every(isValidQuestion)) {
+    throw new Error("data/odoo.json contiene preguntas con un formato no válido.");
+  }
+  if (new Set(payload.map((question) => question.id)).size !== payload.length) {
+    throw new Error("data/odoo.json contiene identificadores de pregunta duplicados.");
+  }
+  let questions = payload;
+  if (subjectId === "revision") {
+    const report = await loadJson(new URL("data/odoo_revision.json", assetBaseUrl));
+    if (!report || !Array.isArray(report.questions)) throw new Error("data/odoo_revision.json no contiene un informe de revisión válido.");
+    const questionIds = new Set(payload.map((question) => question.id));
+    if (!report.questions.every((item) => item && questionIds.has(item.id) && typeof item.status === "string")) {
+      throw new Error("El informe de revisión contiene referencias a preguntas no válidas.");
+    }
+    if (new Set(report.questions.map((item) => item.id)).size !== report.questions.length) {
+      throw new Error("El informe de revisión contiene identificadores duplicados.");
+    }
+    const pending = new Map(report.questions.filter((item) => item.status === "duda").map((item) => [item.id, item]));
+    questions = payload.filter((question) => pending.has(question.id)).map((question) => ({
+      ...question,
+      reviewReason: pending.get(question.id).reason,
+    }));
+  }
+  return questions.map((question) => ({
+    ...question,
+    ...(question.image ? { image: new URL(question.image, bankUrl).href } : {}),
+  }));
+}
+
+async function loadJson(url) {
+  let response;
   try {
-    const response = await fetch(`./data/${subjectFile}`);
-    if (!response.ok) {
-      return null;
-    }
-
-    const payload = await response.json();
-    if (!Array.isArray(payload) || !payload.every(isValidQuestion)) {
-      return null;
-    }
-
-    if (new Set(payload.map((question) => question.id)).size !== payload.length) {
-      return null;
-    }
-    return payload;
+    response = await fetch(url, { cache: "no-cache" });
   } catch {
-    return null;
+    throw new Error(`No hay conexión con ${url.href}. Comprueba tu conexión e inténtalo de nuevo.`);
+  }
+  if (!response.ok) {
+    throw new Error(`No se pudo descargar ${url.pathname} (HTTP ${response.status}). Comprueba que el archivo esté incluido en la publicación.`);
+  }
+  try {
+    return await response.json();
+  } catch {
+    throw new Error(`${url.pathname} no contiene JSON válido.`);
   }
 }
 
@@ -152,7 +215,9 @@ function isValidQuestion(questionItem) {
   if (!questionItem || typeof questionItem !== "object") return false;
   if (!Number.isSafeInteger(questionItem.id)) return false;
   if (typeof questionItem.question !== "string" || !questionItem.question.trim()) return false;
-  if (!Array.isArray(questionItem.options) || questionItem.options.length < 2) return false;
+  if (questionItem.image !== undefined && (typeof questionItem.image !== "string" || !questionItem.image.trim())) return false;
+  // Algunas entradas del banco solo incluyen la respuesta documentada.
+  if (!Array.isArray(questionItem.options) || questionItem.options.length < 1) return false;
 
   return questionItem.options.every((optionItem) => {
     return optionItem && typeof optionItem.text === "string" && optionItem.text.trim() && typeof optionItem.isCorrect === "boolean";
@@ -202,9 +267,13 @@ function renderQuiz() {
     </section>
 
     <section class="card">
+      <p>${subjects[session.subjectId].label}</p>
+      ${renderSubjectNotice(session.subjectId)}
       <h3>${escapeHtml(currentQuestion.question)}</h3>
+      ${renderQuestionImage(currentQuestion)}
       <div class="options-list">${optionsMarkup}</div>
       <p class="helper">${isAnswered ? "Respuesta guardada." : "Selecciona una respuesta para continuar."}</p>
+      ${isAnswered && currentQuestion.reviewReason ? `<p class="helper">Motivo de revisión: ${escapeHtml(currentQuestion.reviewReason)}</p>` : ""}
     </section>
 
     <div class="next-bar">
@@ -291,6 +360,8 @@ function renderResults() {
   appRoot.innerHTML = `
     <section class="card">
       <h2>Resultado final</h2>
+      <p>${subjects[session.subjectId].label}</p>
+      ${renderSubjectNotice(session.subjectId)}
       <p>Has acertado ${session.score} de ${totalQuestions} preguntas.</p>
       <h3>${resultPercent}% de aciertos</h3>
       <div class="actions single-column" style="margin-top: 0.75rem;">
@@ -372,6 +443,23 @@ function escapeHtml(rawValue) {
     .replaceAll("'", "&#39;");
 }
 
+function renderSubjectNotice(subjectId) {
+  const warning = subjects[subjectId].warning;
+  return warning ? `<p class="review-warning" role="note">${escapeHtml(warning)}</p>` : "";
+}
+
+function renderQuestionImage(question) {
+  if (!question.image) return "";
+
+  const imagePath = escapeHtml(question.image);
+  return `
+    <a class="question-image" href="${imagePath}" target="_blank" rel="noopener noreferrer" aria-label="Ampliar imagen de la pregunta ${question.id} (se abre en otra pestaña)">
+      <img src="${imagePath}" alt="Captura de pantalla de la pregunta ${question.id}" />
+      <span class="helper">Ampliar imagen ↗</span>
+    </a>
+  `;
+}
+
 function renderReview(mistakes) {
  const currentMistake = mistakes[appState.reviewIndex];
   const userChoice = currentMistake.options[appState.session.answers[currentMistake.id]];
@@ -386,6 +474,8 @@ function renderReview(mistakes) {
         Error ${appState.reviewIndex + 1} de ${mistakes.length}
       </h3>
       <p><strong>${escapeHtml(currentMistake.question)}</strong></p>
+      ${renderQuestionImage(currentMistake)}
+      ${currentMistake.reviewReason ? `<p class="helper">Motivo de revisión: ${escapeHtml(currentMistake.reviewReason)}</p>` : ""}
       
       <div style="margin: 1rem 0; display: grid; gap: 0.5rem;">
         <div style="color: ${colorWrong}; padding: 0.5rem; border-left: 3px solid ${colorWrong}">

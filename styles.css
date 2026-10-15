@@ -177,3 +177,38 @@ input[type="number"] {
   font-size: 0.92rem;
 }
 
+.subject-picker {
+  min-width: 0;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  border: 0;
+}
+
+.subject-picker legend {
+  margin-bottom: 0.5rem;
+  font-weight: 700;
+}
+
+.review-warning {
+  padding: 0.75rem;
+  border: 1px solid #fbbf24;
+  border-radius: 8px;
+  color: #fde68a;
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.question-image {
+  display: block;
+  margin: 0.75rem 0 1rem;
+  color: var(--text-muted);
+}
+
+.question-image img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto 0.5rem;
+  border-radius: 8px;
+  background: #fff;
+}
+
