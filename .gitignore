@@ -1,0 +1,22 @@
+# Dependencias y archivos generados
+node_modules/
+dist/
+coverage/
+*.log
+__pycache__/
+*.py[cod]
+
+# Configuración local y credenciales
+.env
+.env.*
+!.env.example
+.aws/
+.codex/
+.agents/
+.vscode/
+.idea/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+Desktop.ini
